@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Box Lottery v8 (Fly to List)</title>
+    <style>
+        /* =========================================
+           基本設定・レイアウト
+           ========================================= */
+        :root {
+            --box-size: 100px;
+            /* 隙間対策：面をわずかに大きくして重ねる */
+            --face-size: 100.5px; 
+            --box-offset: 50px;
+        }
+
+        body {
+            font-family: "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            height: 100vh;
+            background-color: #222;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            perspective: 1000px; /* 遠近感 */
+        }
+
+        h1 {
+            color: #fff;
+            position: absolute;
+            top: 20px;
+            z-index: 50;
+            text-shadow: 0 2px 5px rgba(0,0,0,0.5);
+            pointer-events: none;
+            width: 100%;
+            text-align: center;
+            font-size: 1.5rem;
+            opacity: 0.8;
+            transition: opacity 0.5s;
+        }
+
+        #stage {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            transform-style: preserve-3d;
+            transform: rotateX(10deg); 
+            transition: transform 0.8s ease;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 40px;
+            z-index: 100;
+        }
+
+        button {
+            padding: 15px 60px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #333;
+            background: #fff;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            transition: all 0.2s;
+        }
+        button:hover { background: #f0f0f0; transform: scale(1.05); }
+        button:active { transform: scale(0.95); }
+        button:disabled { opacity: 0.5; cursor: default; transform: none; }
+
+        /* =========================================
+           3D Cube (ボックス) の構造
+           ========================================= */
+        .cube-wrapper {
+            position: absolute;
+            width: var(--box-size);
+            height: var(--box-size);
+            transform-style: preserve-3d;
+            transition: all 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .cube {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            transform-style: preserve-3d;
+            transition: transform 1s;
+        }
+
+        /* 箱の面 */
+        .face {
+            position: absolute;
+            width: var(--face-size); 
+            height: var(--face-size);
+            background-color: inherit;
+            /* 立体感を出すための影 */
+            box-shadow: inset 0 0 30px rgba(0,0,0,0.15);
+            /* 位置合わせ */
+            left: calc((var(--box-size) - var(--face-size)) / 2);
+            top: calc((var(--box-size) - var(--face-size)) / 2);
+            
+            transition: transform 0.8s ease-out, opacity 0.8s ease-out;
+            backface-visibility: hidden; /* 裏側を描画しないことでチラつき防止 */
+        }
+
+        /* 各面の配置（6面体） */
+        .face.front  { transform: translateZ(var(--box-offset)); }
+        .face.back   { transform: rotateY(180deg) translateZ(var(--box-offset)); }
+        .face.right  { transform: rotateY(90deg) translateZ(var(--box-offset)); }
+        .face.left   { transform: rotateY(-90deg) translateZ(var(--box-offset)); }
+        .face.top    { transform: rotateX(90deg) translateZ(var(--box-offset)); }
+        .face.bottom { transform: rotateX(-90deg) translateZ(var(--box-offset)); }
+
+        /* =========================================
+           箱が弾け飛ぶアニメーション
+           ========================================= */
+        .explode .face {
+            opacity: 0; /* 飛びながら消える */
+        }
+        /* 各面がバラバラの方向に大きく飛び散る */
+        .explode .face.front  { transform: translateZ(400px) rotateX(45deg) rotateY(20deg); }
+        .explode .face.back   { transform: translateZ(-400px) rotateX(-45deg); }
+        .explode .face.right  { transform: translateX(400px) rotateY(45deg); }
+        .explode .face.left   { transform: translateX(-400px) rotateY(-45deg); }
+        .explode .face.top    { transform: translateY(-400px) rotateZ(45deg); }
+        .explode .face.bottom { transform: translateY(400px) rotateZ(-45deg); }
+
+        
+        /* =========================================
+           リスト化されるテキスト
+           ========================================= */
+        .pop-text-item {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0); /* 初期: 中央で極小 */
+            
+            /* リストとして見やすいスタイル */
+            width: 200px; /* 固定幅で揃える */
+            text-align: center;
+            white-space: nowrap;
+            color: #333;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 1.2rem;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+            border: 2px solid #333;
+            
+            opacity: 0;
+            pointer-events: none;
+            z-index: 1;
+
+            /* アニメーション設定 */
+            transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.4s;
+        }
+
+        /* アクティブ時: JSで指定した位置へ移動 */
+        .pop-text-item.active {
+            opacity: 1;
+            z-index: 200; /* 最前面 */
+            /* translateZ(300px) などをJSで付与して手前に出す
+            */
+            transform: translate(var(--tx), var(--ty)) translateZ(var(--tz)) scale(1);
+        }
+
+        /* =========================================
+           その他アニメーション
+           ========================================= */
+        
+        .spinning .cube {
+            animation: spinCube 0.5s infinite linear;
+        }
+        @keyframes spinCube {
+            0% { transform: rotateX(0) rotateY(0); }
+            100% { transform: rotateX(360deg) rotateY(360deg); }
+        }
+
+        .fade-out {
+            opacity: 0;
+            transform: scale(0) rotate(180deg);
+        }
+
+        /* 背景のミニボックス */
+        .mini-box {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            transform-style: preserve-3d;
+            animation: floatBox 12s infinite ease-in-out alternate;
+        }
+        .mini-box .face {
+            width: 40.5px; height: 40.5px;
+            left: calc((40px - 40.5px) / 2);
+            top: calc((40px - 40.5px) / 2);
+        }
+        @keyframes floatBox {
+            0% { transform: translateY(0) rotateY(0); }
+            100% { transform: translateY(-30px) rotateY(180deg); }
+        }
+
+    </style>
+</head>
+<body>
+
+    <h1 id="title-text">LUCKY BOX</h1>
+
+    <div id="stage">
+        </div>
+
+    <div id="controls">
+        <button id="action-btn">START</button>
+    </div>
+
+    <script>
+        /* ==========================================================
+           【設定エリア】
+           ========================================================== */
+        const CONFIG = {
+            candidates: [
+                "令和6年度",
+                "令和5年度",
+                "令和4年度",
+                "令和3年度",
+                "令和2年度",
+                "令和元年秋期",
+                "平成31年春期",
+                "平成30年秋期","平成30年春期",
+                "平成29年秋期","平成29年春期",
+                "平成28年秋期","平成28年春期",
+                "平成27年秋期","平成27年春期",
+                "平成26年秋期","平成26年春期",
+                "平成25年秋期","平成25年春期",
+                "平成24年秋期","平成24年春期",
+                "平成23年秋期","平成23年春期",
+                "平成22年秋期","平成22年春期",
+                "平成21年秋期","平成21年春期",
+                "平成20年秋期","平成20年春期",
+                "平成19年秋期","平成19年春期",
+                "平成18年秋期","平成18年春期",
+                "平成17年秋期","平成17年春期",
+                "平成16年秋期","平成16年春期",
+            ],
+            drawCount: 1,        // リスト表示する個数（3～5個が綺麗）
+            homeBoxCount: 30,    
+            inputCoolDownTime: 2000 
+        };
+
+        /* ==========================================================
+           システムロジック
+           ========================================================== */
+        const stage = document.getElementById('stage');
+        const btn = document.getElementById('action-btn');
+        const title = document.getElementById('title-text');
+        
+        const STATE = { HOME: 'HOME', LOTTERY: 'LOTTERY', RESULT: 'RESULT' };
+        let currentState = STATE.HOME;
+        let isInputLocked = false;
+
+        function getRandomColor() {
+            const letters = '0123456789ABCDEF';
+            let color = '#';
+            for (let i = 0; i < 6; i++) { color += letters[Math.floor(Math.random() * 16)]; }
+            return color;
+        }
+
+        function getMultipleRandomTexts(count) {
+            const shuffled = [...CONFIG.candidates].sort(() => 0.5 - Math.random());
+            return shuffled.slice(0, Math.min(count, CONFIG.candidates.length));
+        }
+
+        // HTML生成（フタなし、完全な立方体）
+        function createCubeHTML(id, color, isMini = false) {
+            const sizeClass = isMini ? 'mini-box' : 'cube-wrapper';
+            const offset = isMini ? 20 : 50; 
+
+            // ミニボックス用のオフセット上書き
+            const miniStyle = isMini ? `
+                #${id} .face.front  { transform: translateZ(${offset}px); }
+                #${id} .face.back   { transform: rotateY(180deg) translateZ(${offset}px); }
+                #${id} .face.right  { transform: rotateY(90deg) translateZ(${offset}px); }
+                #${id} .face.left   { transform: rotateY(-90deg) translateZ(${offset}px); }
+                #${id} .face.top    { transform: rotateX(90deg) translateZ(${offset}px); }
+                #${id} .face.bottom { transform: rotateX(-90deg) translateZ(${offset}px); }
+            ` : '';
+
+            return `
+                <div id="${id}" class="${sizeClass}" style="color: ${color};">
+                    <style>
+                        #${id} .face { background-color: ${color}; }
+                        ${miniStyle}
+                    </style>
+                    <div class="cube">
+                        <div class="face front"></div>
+                        <div class="face back"></div>
+                        <div class="face right"></div>
+                        <div class="face left"></div>
+                        <div class="face top"></div>
+                        <div class="face bottom"></div>
+                        <div class="text-container"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- ホーム画面 ---
+        function renderHome() {
+            currentState = STATE.HOME;
+            stage.innerHTML = '';
+            stage.style.transform = "rotateX(10deg)";
+            btn.innerText = "START";
+            title.style.opacity = "1"; // タイトル表示
+            isInputLocked = false;
+
+            for (let i = 0; i < CONFIG.homeBoxCount; i++) {
+                const id = `mini-${i}`;
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = createCubeHTML(id, getRandomColor(), true);
+                const el = wrapper.firstElementChild;
+                
+                const x = (Math.random() * 90) - 45; 
+                const y = (Math.random() * 80) - 40;
+                const z = (Math.random() * 600) - 300;
+                const delay = Math.random() * 2;
+
+                el.style.left = `calc(50% + ${x}vw)`;
+                el.style.top = `calc(50% + ${y}vh)`;
+                el.style.transform = `translateZ(${z}px)`;
+                el.style.animationDelay = `-${delay}s`;
+
+                stage.appendChild(el);
+            }
+        }
+
+        // --- 抽選開始 ---
+        function startLottery() {
+            if (isInputLocked) return;
+            currentState = STATE.LOTTERY;
+            
+            stage.innerHTML = '';
+            btn.innerText = "抽選中...";
+            btn.disabled = true;
+
+            const colors = new Set();
+            while(colors.size < 3) colors.add(getRandomColor());
+            const colorArray = Array.from(colors);
+
+            colorArray.forEach((color, index) => {
+                const id = `lottery-box-${index}`;
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = createCubeHTML(id, color, false);
+                const el = wrapper.firstElementChild;
+
+                const spacing = 160; 
+                const xOffset = (index - 1) * spacing;
+                el.style.transform = `translateX(${xOffset}px)`;
+                el.classList.add('spinning');
+                stage.appendChild(el);
+            });
+
+            setTimeout(showResult, 2000); 
+        }
+
+        // --- 結果発表 ---
+        function showResult() {
+            currentState = STATE.RESULT;
+            const winningIndex = Math.floor(Math.random() * 3);
+            const winningTexts = getMultipleRandomTexts(CONFIG.drawCount);
+
+            for(let i=0; i<3; i++) {
+                const box = document.getElementById(`lottery-box-${i}`);
+                const container = box.querySelector('.text-container');
+                
+                box.classList.remove('spinning');
+                // 少しだけ傾けて配置（爆発前）
+                box.querySelector('.cube').style.transform = 'rotateX(-20deg) rotateY(-30deg)';
+
+                if (i === winningIndex) {
+                    // --- 当選 ---
+                    
+                    // リスト配置の計算
+                    const itemCount = winningTexts.length;
+                    const itemHeight = 70; // アイテムごとの高さ間隔
+                    // リスト全体の高さを計算して、中央配置の開始位置(Y)を決める
+                    const totalHeight = (itemCount - 1) * itemHeight;
+                    const startY = -(totalHeight / 2);
+
+                    winningTexts.forEach((textStr, idx) => {
+                        const div = document.createElement('div');
+                        div.className = 'pop-text-item';
+                        div.innerText = textStr;
+                        
+                        // 座標計算
+                        // X: -50% (CSSで中心) からのズレは0（中央揃え）
+                        // Y: 計算したリスト位置
+                        // Z: 300px (カメラに近づける＝手前に表示)
+                        
+                        const ty = startY + (idx * itemHeight);
+                        const tz = 300; 
+
+                        div.style.setProperty('--tx', `0px`);
+                        div.style.setProperty('--ty', `${ty}px`);
+                        div.style.setProperty('--tz', `${tz}px`);
+
+                        container.appendChild(div);
+
+                        // 順番に表示（少しウェイトをかけて、ポン、ポン、ポンと出す）
+                        setTimeout(() => {
+                            div.classList.add('active');
+                        }, 400 + (idx * 150));
+                    });
+
+                    // 箱の爆発アニメーション
+                    setTimeout(() => {
+                        // タイトルを薄くしてリストを目立たせる
+                        title.style.opacity = "0.1"; 
+                        
+                        box.style.zIndex = 100;
+                        box.classList.add('explode');
+                    }, 300);
+
+                } else {
+                    // ハズレの箱
+                    box.classList.add('fade-out');
+                }
+            }
+
+            isInputLocked = true;
+            setTimeout(() => {
+                isInputLocked = false;
+                btn.disabled = false;
+                btn.innerText = "BACK TO HOME";
+                btn.focus();
+            }, CONFIG.inputCoolDownTime);
+        }
+
+        function handleInput() {
+            if (isInputLocked) return;
+            if (currentState === STATE.HOME) startLottery();
+            else if (currentState === STATE.RESULT) renderHome();
+        }
+
+        btn.addEventListener('click', handleInput);
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleInput();
+            }
+        });
+
+        renderHome();
+    </script>
+</body>
+</html>
